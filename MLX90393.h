@@ -2,6 +2,7 @@
 // MLX90393.cpp : arduino driver for MLX90393 magnetometer
 //
 // Copyright 2016 Theodore C. Yapo
+// Copyright 2022 Andrew McDonnell - updated to support the Raspberry Pi Pico SDK
 //
 // released under MIT License (see file)
 //
@@ -9,8 +10,19 @@
 #ifndef MLX90393_H_INCLUDED
 #define MLX90393_H_INCLUDED
 
+
+#if defined(PICO_BUILD) && !defined(ARDUINO)
+
+#define MLX_PICO_SDK 1
+#include "hardware/i2c.h"
+
+#else
+
 #include <Arduino.h>
 #include <Wire.h>
+
+#define MLX_PICO_SDK 0
+#endif
 
 class MLX90393
 {
@@ -84,7 +96,11 @@ public:
   uint16_t convDelayMillis();
 
   // higher-level API
+#if MLX_PICO_SDK
+  uint8_t begin(uint8_t addr1 = 0, uint8_t addr0 = 0, int DRDY_pin = -1, i2c_inst_t *wirePort = i2c0);
+#else
   uint8_t begin(uint8_t addr1 = 0, uint8_t addr0 = 0, int DRDY_pin = -1, TwoWire &wirePort = Wire);
+#endif
 
   // returns B (x,y,z) in uT, temperature in C
   uint8_t readData(txyz& data);
@@ -136,7 +152,10 @@ private:
   float base_z_sens_hc0xc;
 
   private:
+#if MLX_PICO_SDK
+    i2c_inst_t *_i2cInst;
+#else
     TwoWire *_i2cPort; //The generic connection to user's chosen I2C hardware
-
+#endif
 };
 #endif // #ifndef MLX90393_H_INCLUDED

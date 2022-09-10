@@ -2,11 +2,28 @@
 // MLX90393.cpp : arduino driver for MLX90393 magnetometer
 //
 // Copyright 2016 Theodore C. Yapo
+// Copyright 2022 Andrew McDonnell - updated to support the Raspberry Pi Pico SDK
 //
 // released under MIT License (see file)
 //
 
 #include <MLX90393.h>
+
+#if MLX_PICO_SDK
+#include "pico/stdlib.h"
+#include <stdio.h>
+
+#if 0
+#define DEBUG printf
+#else
+#define DEBUG(...)
+#endif
+#define INPUT false
+#define pinMode(pin, direction) do { gpio_init(pin);  gpio_set_dir(pin, direction); } while(0)
+#define delay(ms) busy_wait_us(ms * 1000)
+#define delayMicroseconds(us) busy_wait_us_32(us)
+#define digitalRead(pin) gpio_get(pin)
+#endif
 
 MLX90393::
 MLX90393()
@@ -36,7 +53,11 @@ MLX90393()
 
 uint8_t
 MLX90393::
+#if MLX_PICO_SDK
+begin(uint8_t addr1, uint8_t addr0, int DRDY_pin, i2c_inst_t *wirePort)
+#else
 begin(uint8_t addr1, uint8_t addr0, int DRDY_pin, TwoWire &wirePort)
+#endif
 {
   I2C_address = I2C_BASE_ADDR | (addr1?2:0) | (addr0?1:0);
   this->DRDY_pin = DRDY_pin;
@@ -44,7 +65,11 @@ begin(uint8_t addr1, uint8_t addr0, int DRDY_pin, TwoWire &wirePort)
     pinMode(DRDY_pin, INPUT);
   }
 
+#if MLX_PICO_SDK
+  _i2cInst = wirePort;
+#else
   _i2cPort = &wirePort; //Grab which port the user wants us to use
+#endif
 
   uint8_t status1 = checkStatus(reset());
   uint8_t status2 = setGainSel(7);
@@ -120,12 +145,21 @@ uint8_t
 MLX90393::
 sendCommand(uint8_t cmd)
 {
+#if MLX_PICO_SDK
+  uint8_t buf;
+  DEBUG("D:sendCommand %02x\n", cmd);
+  if (1 != i2c_write_blocking(_i2cInst, I2C_address, &cmd, 1, true)) { return STATUS_ERROR; }
+  if (1 != i2c_read_blocking(_i2cInst, I2C_address, &buf, 1, false)) { return STATUS_ERROR; }
+  DEBUG("D:sendCommand %02x -> %02x\n", cmd,buf);
+  return buf;
+#else
   _i2cPort->beginTransmission(I2C_address);
   if (_i2cPort->write(cmd) != 1){ return STATUS_ERROR; }
   if (_i2cPort->endTransmission()){ return STATUS_ERROR; }
   if (_i2cPort->requestFrom(I2C_address, uint8_t(1)) != 1){ return STATUS_ERROR; }
 
   return _i2cPort->read();
+#endif
 }
 
 uint8_t
@@ -174,6 +208,10 @@ MLX90393::
 readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result)
 {
   uint8_t cmd = CMD_READ_MEASUREMENT | (zyxt_flags & 0xf);
+#if MLX_PICO_SDK
+  DEBUG("D:readMeasurement %02x\n", cmd);
+  if (1 != i2c_write_blocking(_i2cInst, I2C_address, &cmd, 1, true)) { return STATUS_ERROR; }
+#else
   _i2cPort->beginTransmission(I2C_address);
   if(_i2cPort->write(cmd) != 1){
     return STATUS_ERROR;
@@ -181,13 +219,16 @@ readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result)
   if (_i2cPort->endTransmission()){
     return STATUS_ERROR;
   }
-
+#endif
   uint8_t buffer[9];
   uint8_t count = 1 + (((zyxt_flags & Z_FLAG)?2:0) +
                        ((zyxt_flags & Y_FLAG)?2:0) +
                        ((zyxt_flags & X_FLAG)?2:0) +
                        ((zyxt_flags & T_FLAG)?2:0) );
 
+#if MLX_PICO_SDK
+  if (count != i2c_read_blocking(_i2cInst, I2C_address, buffer, count, false)) { return STATUS_ERROR; }
+#else
   if(_i2cPort->requestFrom(I2C_address, count) != count){
     return STATUS_ERROR;
   }
@@ -198,6 +239,9 @@ readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result)
       return STATUS_ERROR;
     }
   }
+#endif
+
+  DEBUG("D:readMeasurement %02x -> %d: %02x, ...\n", cmd, count, buffer[0]);
 
   uint8_t i = 1;
   if (zyxt_flags & T_FLAG){
@@ -232,23 +276,33 @@ uint8_t
 MLX90393::
 readRegister(uint8_t address, uint16_t& data)
 {
+  uint8_t status;
+  uint8_t b_h;
+  uint8_t b_l;
+#if MLX_PICO_SDK
+  const uint8_t a1 = (address & 0x3f) << 2;
+  const uint8_t cmd[2] = { CMD_READ_REGISTER, a1 };
+  if (2 != i2c_write_blocking(_i2cInst, I2C_address, cmd, 2, true)) { return STATUS_ERROR; }
+  uint8_t buf[3];
+  if (3 != i2c_read_blocking(_i2cInst, I2C_address, buf, 3, false)) { return STATUS_ERROR; }
+  status = buf[0];
+  b_h = buf[1];
+  b_l = buf[2];
+#else
   _i2cPort->beginTransmission(I2C_address);
   if (_i2cPort->write(CMD_READ_REGISTER) != 1){ return STATUS_ERROR; }
   if (_i2cPort->write((address & 0x3f)<<2) != 1){ return STATUS_ERROR; }
   if (_i2cPort->endTransmission()){ return STATUS_ERROR; }
   if (_i2cPort->requestFrom(I2C_address, uint8_t(3)) != 3){ return STATUS_ERROR; }
-
-  uint8_t status;
   if (!_i2cPort->available()){ return STATUS_ERROR; }
   status = _i2cPort->read();
 
-  uint8_t b_h;
   if (!_i2cPort->available()){ return STATUS_ERROR; }
   b_h = _i2cPort->read();
 
-  uint8_t b_l;
   if (!_i2cPort->available()){ return STATUS_ERROR; }
   b_l = _i2cPort->read();
+#endif
 
   data = (uint16_t(b_h)<<8) | b_l;
   cache_set(address, data);
@@ -261,6 +315,15 @@ writeRegister(uint8_t address, uint16_t data)
 {
   cache_invalidate(address);
 
+#if MLX_PICO_SDK
+  const uint8_t d1 = (data & 0xff00u) >> 8;
+  const uint8_t d2 = data & 0xff;
+  const uint8_t a1 = (address & 0x3fu) << 2;
+  const uint8_t cmd[4] = { CMD_WRITE_REGISTER, d1, d2, a1 };
+  if (4 != i2c_write_blocking(_i2cInst, I2C_address, cmd, 4, true)) { return STATUS_ERROR; }
+  uint8_t status;
+  if (1 != i2c_read_blocking(_i2cInst, I2C_address, &status, 1, false)) { return STATUS_ERROR; }
+#else
   _i2cPort->beginTransmission(I2C_address);
   if (_i2cPort->write(CMD_WRITE_REGISTER) != 1){ return STATUS_ERROR; }
   if (_i2cPort->write((data & 0xff00) >> 8) != 1){ return STATUS_ERROR; }
@@ -269,8 +332,8 @@ writeRegister(uint8_t address, uint16_t data)
   if (_i2cPort->endTransmission()){ return STATUS_ERROR; }
   if (_i2cPort->requestFrom(I2C_address, uint8_t(1)) != 1){ return STATUS_ERROR; }
   if (!_i2cPort->available()){ return STATUS_ERROR; }
-
   const uint8_t status = _i2cPort->read();
+#endif
   if (isOK(status)) {
     cache_set(address, data);
   }
